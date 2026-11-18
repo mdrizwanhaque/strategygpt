@@ -11,7 +11,8 @@ import yfinance as yf
 
 st.set_page_config(page_title="StrategyGPT", page_icon="📈", layout="wide")
 
-MODEL = "gemini-2.5-flash"  # change if Google renames the model
+# Tried in order; the first one Google accepts is used
+MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest"]
 
 SYSTEM = """You convert a long-only trading strategy written in plain English into JSON.
 Allowed features: close, sma_N, ema_N, rsi_N (N is a whole number from 2 to 200).
@@ -68,11 +69,20 @@ def has_key() -> bool:
 
 def ask_llm(prompt: str, system: str, as_json: bool) -> str:
     from google import genai
-    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("“”")
+    client = genai.Client(api_key=key)
     cfg = {"system_instruction": system}
     if as_json:
         cfg["response_mime_type"] = "application/json"
-    return client.models.generate_content(model=MODEL, contents=prompt, config=cfg).text
+    last = None
+    for model in MODELS:
+        try:
+            return client.models.generate_content(model=model, contents=prompt, config=cfg).text
+        except Exception as e:  # model retired or not found: try the next one
+            last = e
+            if "not found" not in str(e).lower() and "404" not in str(e):
+                raise
+    raise last
 
 
 def parse_strategy(text: str) -> dict:
@@ -87,9 +97,10 @@ def parse_strategy(text: str) -> dict:
     try:
         return json.loads(ask_llm(text, SYSTEM, as_json=True))
     except Exception as e:
-        if "API_KEY_INVALID" in str(e) or "API key not valid" in str(e):
-            raise ValueError("the Gemini API key in Secrets is not valid. Copy a fresh key from "
-                             "aistudio.google.com/apikey and paste it again.") from None
+        if "API_KEY_INVALID" in str(e) or "API key not valid" in str(e) or "UNAUTHENTICATED" in str(e):
+            k = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+            raise ValueError(f"Google rejected the API key (it starts with '{k[:3]}' and has {len(k)} "
+                             "characters). Use the copy icon in AI Studio to copy the full key.") from None
         raise
 
 
