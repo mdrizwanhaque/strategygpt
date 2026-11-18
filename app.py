@@ -77,7 +77,7 @@ def _models(key: str) -> list:
     import requests
     found = []
     try:
-        r = requests.get(f"{API}/models", headers={"x-goog-api-key": key}, params={"pageSize": 200}, timeout=20)
+        r = requests.get(f"{API}/models", headers={"x-goog-api-key": key}, params={"pageSize": 200}, timeout=8)
         for m in r.json().get("models", []):
             if "generateContent" in m.get("supportedGenerationMethods", []):
                 found.append(m["name"].split("/", 1)[1])
@@ -94,13 +94,25 @@ def ask_llm(prompt: str, system: str, as_json: bool) -> str:
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
     }
-    if as_json:
-        body["generationConfig"] = {"responseMimeType": "application/json"}
+    gen = {"responseMimeType": "application/json"} if as_json else {}
     errors = []
-    for model in _models(key)[:8]:
-        r = requests.post(f"{API}/models/{model}:generateContent",
-                          headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-                          json=body, timeout=60)
+    for model in _models(key)[:4]:
+        cfg = dict(gen)
+        if "2.5" in model or "latest" in model:
+            cfg["thinkingConfig"] = {"thinkingBudget": 0}  # fast answers, no long thinking
+        body["generationConfig"] = cfg
+        try:
+            r = requests.post(f"{API}/models/{model}:generateContent",
+                              headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                              json=body, timeout=20)
+        except requests.RequestException as e:
+            errors.append(f"{model}: {type(e).__name__}")
+            continue
+        if r.status_code == 400 and "thinking" in r.text.lower():
+            body["generationConfig"] = gen
+            r = requests.post(f"{API}/models/{model}:generateContent",
+                              headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                              json=body, timeout=20)
         if r.ok:
             parts = r.json()["candidates"][0]["content"]["parts"]
             return "".join(p.get("text", "") for p in parts)
@@ -111,6 +123,74 @@ def ask_llm(prompt: str, system: str, as_json: bool) -> str:
     raise RuntimeError(f"Gemini refused (key starts {key[:4]}, length {len(key)}). " + " | ".join(errors))
 
 
+
+# ---------- offline parser for common phrasings ----------
+_NUM = r"(\d{1,3}(?:\.\d+)?)"
+
+
+def _feat(txt: str):
+    t = txt.lower()
+    m = re.search(r"rsi\s*\(?\s*(\d{1,3})|(\d{1,3})[\s-]*(?:day|period)?\s*rsi", t)
+    if m:
+        return f"rsi_{m.group(1) or m.group(2)}"
+    if "rsi" in t:
+        return "rsi_14"
+    m = re.search(r"(\d{1,3})[\s-]*(?:day|d)?[\s-]*(sma|ema|moving average|average|ma)\b|(sma|ema)\s*\(?\s*(\d{1,3})", t)
+    if m:
+        n = m.group(1) or m.group(4)
+        kind = (m.group(2) or m.group(3) or "").lower()
+        return f"{'ema' if kind == 'ema' else 'sma'}_{n}"
+    if "price" in t or "close" in t:
+        return "close"
+    return None
+
+
+def _cond(clause: str, last_feat):
+    t = clause.lower()
+    ops = [(r"crosses? (?:back )?above|crosses? over", "crosses_above"),
+           (r"crosses? (?:back )?below|crosses? under", "crosses_below"),
+           (r"below|under|less than|drops? (?:below|under)|falls? (?:below|under)|<", "<"),
+           (r"above|over|greater than|more than|rises? above|goes above|>", ">")]
+    for pat, op in ops:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        left = _feat(t[:m.start()]) or last_feat
+        rest = t[m.end():]
+        right = _feat(rest)
+        if right is None or right == left:
+            n = re.search(_NUM, rest)
+            right = float(n.group(1)) if n else None
+        if left and right is not None:
+            return {"left": left, "op": op, "right": right}
+    return None
+
+
+def local_parse(text: str):
+    t = text.lower().replace(",", " ")
+    m = re.search(r"\b(sell|exit|close the position|get out)\b", t)
+    buy, sell = (t[:m.start()], t[m.start():]) if m else (t, "")
+    entry, exit_ = [], []
+    last = None
+    for part in re.split(r"\band\b", buy):
+        c = _cond(part, last)
+        if c:
+            entry.append(c)
+            last = c["left"]
+    for part in re.split(r"\bor\b|\band\b", sell):
+        c = _cond(part, last)
+        if c:
+            exit_.append(c)
+            last = c["left"]
+    if not entry:
+        return None
+    if not exit_:
+        flip = {">": "<", "<": ">", "crosses_above": "crosses_below", "crosses_below": "crosses_above"}
+        exit_ = [{**entry[0], "op": flip[entry[0]["op"]]}]
+    return {"name": "Your strategy", "entry": entry, "exit": exit_,
+            "explanation": "Parsed from your description by the built-in rule reader."}
+
+
 def parse_strategy(text: str) -> dict:
     if text in PRESETS:
         return PRESETS[text]
@@ -118,11 +198,17 @@ def parse_strategy(text: str) -> dict:
         if text.strip().lower() == name.lower():
             return PRESETS[full]
     if not has_key():
+        quick = local_parse(text)
+        if quick:
+            return quick
         raise ValueError("custom strategies need a Gemini API key. Add GEMINI_API_KEY under "
                          "Manage app > Settings > Secrets, or pick an example in the sidebar.")
     try:
         return json.loads(ask_llm(text, SYSTEM, as_json=True))
     except Exception as e:
+        quick = local_parse(text)
+        if quick:  # AI unavailable or slow: fall back to the built-in reader
+            return quick
         if "API_KEY_INVALID" in str(e) or "API key not valid" in str(e) or "UNAUTHENTICATED" in str(e):
             k = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
             raise ValueError(f"Google rejected the API key (it starts with '{k[:3]}' and has {len(k)} "
