@@ -4,3 +4,4 @@ numpy
 plotly
 yfinance
 google-genai
+requests
