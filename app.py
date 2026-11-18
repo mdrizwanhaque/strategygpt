@@ -12,7 +12,8 @@ import yfinance as yf
 st.set_page_config(page_title="StrategyGPT", page_icon="📈", layout="wide")
 
 # Tried in order; the first one Google accepts is used
-MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest"]
+MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
+API = "https://generativelanguage.googleapis.com/v1beta"
 
 SYSTEM = """You convert a long-only trading strategy written in plain English into JSON.
 Allowed features: close, sma_N, ema_N, rsi_N (N is a whole number from 2 to 200).
@@ -67,22 +68,47 @@ def has_key() -> bool:
         return False
 
 
+def _key() -> str:
+    return str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("\u201c\u201d").strip()
+
+
+def _models(key: str) -> list:
+    """Ask Google which models this key can use, flash models first."""
+    import requests
+    found = []
+    try:
+        r = requests.get(f"{API}/models", headers={"x-goog-api-key": key}, params={"pageSize": 200}, timeout=20)
+        for m in r.json().get("models", []):
+            if "generateContent" in m.get("supportedGenerationMethods", []):
+                found.append(m["name"].split("/", 1)[1])
+    except Exception:
+        pass
+    flash = [m for m in found if "flash" in m and "image" not in m and "tts" not in m and "live" not in m]
+    return list(dict.fromkeys(MODELS + flash + found))
+
+
 def ask_llm(prompt: str, system: str, as_json: bool) -> str:
-    from google import genai
-    key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("“”")
-    client = genai.Client(api_key=key)
-    cfg = {"system_instruction": system}
+    import requests
+    key = _key()
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+    }
     if as_json:
-        cfg["response_mime_type"] = "application/json"
-    last = None
-    for model in MODELS:
-        try:
-            return client.models.generate_content(model=model, contents=prompt, config=cfg).text
-        except Exception as e:  # model retired or not found: try the next one
-            last = e
-            if "not found" not in str(e).lower() and "404" not in str(e):
-                raise
-    raise last
+        body["generationConfig"] = {"responseMimeType": "application/json"}
+    errors = []
+    for model in _models(key)[:8]:
+        r = requests.post(f"{API}/models/{model}:generateContent",
+                          headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                          json=body, timeout=60)
+        if r.ok:
+            parts = r.json()["candidates"][0]["content"]["parts"]
+            return "".join(p.get("text", "") for p in parts)
+        msg = r.json().get("error", {}).get("message", r.text)[:160] if r.text else str(r.status_code)
+        errors.append(f"{model}: {r.status_code} {msg}")
+        if r.status_code in (400, 401, 403) and "not found" not in msg.lower():
+            break  # key problem, not a model problem
+    raise RuntimeError(f"Gemini refused (key starts {key[:4]}, length {len(key)}). " + " | ".join(errors))
 
 
 def parse_strategy(text: str) -> dict:
