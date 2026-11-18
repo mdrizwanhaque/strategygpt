@@ -347,11 +347,27 @@ if st.button("Backtest it", type="primary") and text.strip():
     fig.update_layout(title="Growth of ₹1,00,000", yaxis_title="₹", height=420)
     st.plotly_chart(fig, use_container_width=True)
 
+    def plain_summary() -> str:
+        try:
+            sr, br = s.get("Total return", "?"), b.get("Total return", "?")
+            sd = s.get("Max drawdown", "?")
+            return (f"- Strategy return: {sr} vs buy & hold: {br}.\n"
+                    f"- Worst fall from a peak (max drawdown): {sd}.\n"
+                    "- Costs and slippage can shrink real-world returns.\n"
+                    "- Past results don't guarantee future ones; beware of overfitting.")
+        except Exception:
+            return "Past results don't guarantee future ones; beware of overfitting and costs."
+
+    text = None
     if has_key():
         with st.spinner("Explaining the results..."):
-            st.info(ask_llm(
-                f"Strategy: {spec}\nTicker: {ticker}, {years} years\nStrategy stats: {s}\nBuy & hold: {b}",
-                "You are a finance teacher for Indian college students. In 4 short bullet points, explain "
-                "these backtest results in plain English: did it beat buy & hold, how risky was it (drawdown), "
-                "and one honest warning (overfitting, costs, past results don't guarantee future ones).",
-                as_json=False))
+            try:
+                text = ask_llm(
+                    f"Strategy: {spec}\nTicker: {ticker}, {years} years\nStrategy stats: {s}\nBuy & hold: {b}",
+                    "You are a finance teacher for Indian college students. In 4 short bullet points, explain "
+                    "these backtest results in plain English: did it beat buy & hold, how risky was it (drawdown), "
+                    "and one honest warning (overfitting, costs, past results don't guarantee future ones).",
+                    as_json=False)
+            except Exception:
+                text = None
+    st.info(text or plain_summary())
