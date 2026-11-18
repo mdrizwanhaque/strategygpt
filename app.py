@@ -78,10 +78,19 @@ def ask_llm(prompt: str, system: str, as_json: bool) -> str:
 def parse_strategy(text: str) -> dict:
     if text in PRESETS:
         return PRESETS[text]
+    for name, full in EXAMPLES.items():  # typed just the example's name
+        if text.strip().lower() == name.lower():
+            return PRESETS[full]
     if not has_key():
         raise ValueError("custom strategies need a Gemini API key. Add GEMINI_API_KEY under "
                          "Manage app > Settings > Secrets, or pick an example in the sidebar.")
-    return json.loads(ask_llm(text, SYSTEM, as_json=True))
+    try:
+        return json.loads(ask_llm(text, SYSTEM, as_json=True))
+    except Exception as e:
+        if "API_KEY_INVALID" in str(e) or "API key not valid" in str(e):
+            raise ValueError("the Gemini API key in Secrets is not valid. Copy a fresh key from "
+                             "aistudio.google.com/apikey and paste it again.") from None
+        raise
 
 
 def validate(spec: dict) -> None:
