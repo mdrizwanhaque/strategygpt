@@ -59,6 +59,13 @@ OPS = {">", "<", "crosses_above", "crosses_below"}
 
 
 # ---------- AI ----------
+def has_key() -> bool:
+    try:
+        return bool(st.secrets.get("GEMINI_API_KEY"))
+    except Exception:
+        return False
+
+
 def ask_llm(prompt: str, system: str, as_json: bool) -> str:
     from google import genai
     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
@@ -69,8 +76,11 @@ def ask_llm(prompt: str, system: str, as_json: bool) -> str:
 
 
 def parse_strategy(text: str) -> dict:
-    if text in PRESETS and "GEMINI_API_KEY" not in st.secrets:
+    if text in PRESETS:
         return PRESETS[text]
+    if not has_key():
+        raise ValueError("custom strategies need a Gemini API key. Add GEMINI_API_KEY under "
+                         "Manage app > Settings > Secrets, or pick an example in the sidebar.")
     return json.loads(ask_llm(text, SYSTEM, as_json=True))
 
 
@@ -205,7 +215,7 @@ if st.button("Backtest it", type="primary") and text.strip():
     fig.update_layout(title="Growth of ₹1,00,000", yaxis_title="₹", height=420)
     st.plotly_chart(fig, use_container_width=True)
 
-    if "GEMINI_API_KEY" in st.secrets:
+    if has_key():
         with st.spinner("Explaining the results..."):
             st.info(ask_llm(
                 f"Strategy: {spec}\nTicker: {ticker}, {years} years\nStrategy stats: {s}\nBuy & hold: {b}",
