@@ -5,7 +5,7 @@
 Most students have trading ideas ("buy Nifty when RSI drops below 30") but can't code a backtest to check them. StrategyGPT lets you describe a strategy in plain English. AI turns it into precise rules, the app backtests them on real NSE history, and the AI explains the results in simple words.
 
 **Live app:** https://strategygpt.streamlit.app
-**Demo video:** ADD_YOUTUBE_LINK_HERE
+**Demo video:** https://youtu.be/tXgIiRiNI58
 
 ## What it does
 - Type a strategy in plain English, or pick an example
