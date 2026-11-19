@@ -30,7 +30,7 @@ streamlit run app.py
 Get a free Gemini API key at https://aistudio.google.com/apikey. The three example strategies also work without a key.
 
 ## AI models and APIs used
-- **Google Gemini 2.5 Flash** (via the `google-genai` SDK): turns English into JSON strategy rules and explains backtest results
+- **Google Gemini 2.5 Flash** (via the Gemini REST API): turns English into JSON strategy rules and explains backtest results
 - **Yahoo Finance** (via `yfinance`): historical NSE price data
 
 ## How it works
